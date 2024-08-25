@@ -9,6 +9,7 @@ from io import BytesIO
 import random
 import os
 import logging
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
