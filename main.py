@@ -10,6 +10,7 @@ import random
 import os
 import logging
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+print("cuda v:", torch.version.cuda)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
