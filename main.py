@@ -72,46 +72,45 @@ class ImageResponse(BaseModel):
 async def generate_images(request: ImageRequest):
     try:
         logger.info(f"Received image generation request: {request}")
+        
+        # Generate seeds for all images at once
+        seeds = [random.randint(0, 4294967295) for _ in range(request.num_images)]
+        logger.info(f"Using seeds: {seeds}")
+        
+        try:
+            generators = [torch.Generator("cpu").manual_seed(seed) for seed in seeds]
+            logger.info("Created CPU generators")
+        except Exception as e:
+            logger.error(f"Error creating CPU generators: {str(e)}")
+            raise
+
+        try:
+            logger.info("Calling pipe for batch image generation")
+            batch_images = pipe(
+                prompt=[request.positive_prompt] * request.num_images,
+                negative_prompt=[request.negative_prompt] * request.num_images,
+                generator=generators,
+                height=request.height,
+                width=request.width,
+                num_inference_steps=request.num_steps,
+                num_images_per_prompt=1
+            ).images
+            logger.info("Images generated successfully")
+        except Exception as e:
+            logger.error(f"Error during batch image generation: {str(e)}")
+            raise
+
         images = []
-        seeds = []
-
-        for i in range(request.num_images):
-            logger.info(f"Generating image {i+1}/{request.num_images}")
-            seed = random.randint(0, 4294967295)  # Full range of 32-bit integer
-            logger.info(f"Using seed: {seed}")
-            
-            try:
-                generator = torch.Generator("cpu").manual_seed(seed)
-                logger.info("Created CUDA generator")
-            except Exception as e:
-                logger.error(f"Error creating CUDA generator: {str(e)}")
-                raise
-
-            try:
-                logger.info("Calling pipe for image generation")
-                image = pipe(
-                    prompt=request.positive_prompt,
-                    negative_prompt=request.negative_prompt,
-                    generator=generator,
-                    height=request.height,
-                    width=request.width,
-                    num_inference_steps=request.num_steps
-                ).images[0]
-                logger.info("Image generated successfully")
-            except Exception as e:
-                logger.error(f"Error during image generation: {str(e)}")
-                raise
-
-            try:
-                logger.info("Encoding image to base64")
+        try:
+            logger.info("Encoding images to base64")
+            for image in batch_images:
                 buffered = BytesIO()
                 image.save(buffered, format="PNG")
                 images.append(base64.b64encode(buffered.getvalue()).decode())
-                seeds.append(seed)
-                logger.info("Image encoded and added to response")
-            except Exception as e:
-                logger.error(f"Error encoding image: {str(e)}")
-                raise
+            logger.info("Images encoded and added to response")
+        except Exception as e:
+            logger.error(f"Error encoding images: {str(e)}")
+            raise
 
         logger.info("All images generated successfully")
         return ImageResponse(images=images, seeds=seeds)
