@@ -81,7 +81,7 @@ async def generate_images(request: ImageRequest):
             logger.info(f"Using seed: {seed}")
             
             try:
-                generator = torch.Generator("cuda").manual_seed(seed)
+                generator = torch.Generator("cpu").manual_seed(seed)
                 logger.info("Created CUDA generator")
             except Exception as e:
                 logger.error(f"Error creating CUDA generator: {str(e)}")
