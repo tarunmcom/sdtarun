@@ -65,10 +65,6 @@ else:
     logger.warning(f"LoRA weights file not found at {lora_weights_path}")
 
 
-pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-logger.info("DPMSolverMultistepScheduler enabled")
-
-
 
 class ImageRequest(BaseModel):
     positive_prompt: str
