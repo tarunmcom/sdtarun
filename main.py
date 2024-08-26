@@ -4,11 +4,13 @@ from pydantic import BaseModel
 from typing import List
 import torch
 from diffusers import DiffusionPipeline
+from diffusers.utils import is_xformers_available
 import base64
 from io import BytesIO
 import random
 import os
 import logging
+from diffusers import DPMSolverMultistepScheduler
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 print("cuda v:", torch.version.cuda)
 
@@ -42,8 +44,14 @@ except Exception as e:
     logger.error(f"Error enabling CPU offloading: {str(e)}")
     raise
 
+if is_xformers_available():
+    pipe.enable_xformers_memory_efficient_attention()
+    logger.info("enable_xformers_memory_efficient_attention successfully")
+else:
+    logger.warning("xformers is not available. Consider installing it for faster inference.")
+
 # Load LoRA weights
-lora_weights_path = "/app/models/pytorch_lora_weights.safetensors"
+lora_weights_path = "../sdxl/tarun-qwer-p1/pytorch_lora_weights.safetensors"
 if os.path.exists(lora_weights_path):
     try:
         logger.info(f"Loading LoRA weights from: {lora_weights_path}")
@@ -56,10 +64,16 @@ if os.path.exists(lora_weights_path):
 else:
     logger.warning(f"LoRA weights file not found at {lora_weights_path}")
 
+
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+logger.info("DPMSolverMultistepScheduler enabled")
+
+
+
 class ImageRequest(BaseModel):
     positive_prompt: str
     negative_prompt: str
-    num_steps: int = 55
+    num_steps: int = 40
     num_images: int = 1
     height: int = 1024
     width: int = 1024
@@ -78,7 +92,7 @@ async def generate_images(request: ImageRequest):
         logger.info(f"Using seeds: {seeds}")
         
         try:
-            generators = [torch.Generator("cpu").manual_seed(seed) for seed in seeds]
+            generators = [torch.Generator("cuda").manual_seed(seed) for seed in seeds]
             logger.info("Created CPU generators")
         except Exception as e:
             logger.error(f"Error creating CPU generators: {str(e)}")
@@ -151,6 +165,37 @@ async def ui_page():
         <head>
             <title>SDXL LoRA Image Generator</title>
             <script src="https://cdn.tailwindcss.com"></script>
+            <style>
+                .loader {
+                    border: 5px solid #f3f3f3;
+                    border-top: 5px solid #3498db;
+                    border-radius: 50%;
+                    width: 50px;
+                    height: 50px;
+                    animation: spin 1s linear infinite;
+                }
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+                .fullscreen {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100vw;
+                    height: 100vh;
+                    background-color: rgba(0, 0, 0, 0.9);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    z-index: 1000;
+                }
+                .fullscreen img {
+                    max-width: 90%;
+                    max-height: 90%;
+                    object-fit: contain;
+                }
+            </style>
         </head>
         <body class="bg-gray-100 p-8">
             <div class="max-w-md mx-auto bg-white rounded-xl shadow-md overflow-hidden md:max-w-2xl p-6">
@@ -180,9 +225,16 @@ async def ui_page():
                         <label for="width" class="block text-sm font-medium text-gray-700">Width</label>
                         <input type="number" id="width" name="width" value="1024" min="64" max="2048" step="64" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
                     </div>
-                    <button type="submit" class="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">Generate Images</button>
+                    <button type="submit" id="generate-button" class="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">Generate Images</button>
                 </form>
+                <div id="loading" class="hidden mt-4 flex justify-center items-center">
+                    <div class="loader mr-3"></div>
+                    <p>Generating images... This may take a while.</p>
+                </div>
                 <div id="results" class="mt-6 grid grid-cols-2 gap-4"></div>
+            </div>
+            <div id="fullscreen-view" class="fullscreen hidden">
+                <img id="fullscreen-image" src="" alt="Full screen image">
             </div>
             <script>
                 document.getElementById('generate-form').addEventListener('submit', async (e) => {
@@ -194,25 +246,79 @@ async def ui_page():
                     data.height = parseInt(data.height);
                     data.width = parseInt(data.width);
 
-                    const response = await fetch('/generate', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify(data),
-                    });
+                    document.getElementById('loading').classList.remove('hidden');
+                    document.getElementById('generate-button').disabled = true;
+                    document.getElementById('results').innerHTML = '';
 
-                    const result = await response.json();
-                    const resultsDiv = document.getElementById('results');
-                    resultsDiv.innerHTML = '';
-                    result.images.forEach((image, index) => {
-                        const img = document.createElement('img');
-                        img.src = `data:image/png;base64,${image}`;
-                        img.alt = `Generated Image ${index + 1}`;
-                        img.className = 'w-full h-auto rounded-lg shadow-md';
-                        resultsDiv.appendChild(img);
-                    });
+                    try {
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 300000); // 5-minute timeout
+
+                        const response = await fetch('/generate', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(data),
+                            signal: controller.signal
+                        });
+
+                        clearTimeout(timeoutId);
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+
+                        const result = await response.json();
+                        const resultsDiv = document.getElementById('results');
+                        resultsDiv.innerHTML = '';
+                        result.images.forEach((image, index) => {
+                            const imgContainer = document.createElement('div');
+                            imgContainer.className = 'relative';
+
+                            const img = document.createElement('img');
+                            img.src = `data:image/png;base64,${image}`;
+                            img.alt = `Generated Image ${index + 1}`;
+                            img.className = 'w-full h-auto rounded-lg shadow-md cursor-pointer';
+                            img.onclick = () => showFullscreen(img.src);
+
+                            const saveButton = document.createElement('button');
+                            saveButton.textContent = 'Save';
+                            saveButton.className = 'absolute bottom-2 right-2 bg-blue-500 text-white px-2 py-1 rounded';
+                            saveButton.onclick = (e) => {
+                                e.stopPropagation();
+                                saveImage(image, `generated_image_${index + 1}.png`);
+                            };
+
+                            imgContainer.appendChild(img);
+                            imgContainer.appendChild(saveButton);
+                            resultsDiv.appendChild(imgContainer);
+                        });
+                    } catch (error) {
+                        console.error('Error:', error);
+                        alert(`An error occurred: ${error.message}`);
+                    } finally {
+                        document.getElementById('loading').classList.add('hidden');
+                        document.getElementById('generate-button').disabled = false;
+                    }
                 });
+
+                function showFullscreen(src) {
+                    const fullscreenView = document.getElementById('fullscreen-view');
+                    const fullscreenImage = document.getElementById('fullscreen-image');
+                    fullscreenImage.src = src;
+                    fullscreenView.classList.remove('hidden');
+                    fullscreenView.onclick = () => fullscreenView.classList.add('hidden');
+                }
+
+                function saveImage(base64Data, fileName) {
+                    const link = document.createElement('a');
+                    link.href = `data:image/png;base64,${base64Data}`;
+                    link.download = fileName;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }
             </script>
         </body>
     </html>
