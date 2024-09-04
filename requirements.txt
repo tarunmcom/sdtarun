@@ -1,3 +1,4 @@
 autotrain-advanced
 xformers
 peft
+fastapi
