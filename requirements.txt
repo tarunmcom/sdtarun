@@ -1,1 +1,3 @@
-
+autotrain-advanced
+xformers
+peft
