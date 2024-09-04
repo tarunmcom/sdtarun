@@ -55,7 +55,7 @@ def convert_to_json(input_text):
   return json.dumps(result, indent=2)
 
 api_key = os.getenv('API_KEY')
-client = OpenAI(api_key)
+client = OpenAI(api_key=api_key)
 def generate_llm_response(crude_prompt):
   response = client.chat.completions.create(
     model="gpt-4o",
