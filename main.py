@@ -1,20 +1,3 @@
-import subprocess
-import sys
-
-def install_dependencies():
-    try:
-        # Run the command to install dependencies from requirements.txt
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-        print("Dependencies installed successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"An error occurred while installing dependencies: {e}")
-        sys.exit(1)
-
-# Call the function to install dependencies
-install_dependencies()
-
-
-
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
