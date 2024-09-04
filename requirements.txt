@@ -2,3 +2,4 @@ autotrain-advanced
 xformers
 peft
 fastapi
+openai
