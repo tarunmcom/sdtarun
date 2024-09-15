@@ -2,4 +2,6 @@ autotrain-advanced
 xformers
 peft
 flask
+gunicorn
+gevent
 openai
