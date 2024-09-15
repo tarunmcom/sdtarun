@@ -1,5 +1,5 @@
 autotrain-advanced
 xformers
 peft
-fastapi
+flask
 openai
