@@ -1,6 +1,7 @@
 autotrain-advanced
 xformers
 peft
+boto3
 flask
 gunicorn
 gevent
