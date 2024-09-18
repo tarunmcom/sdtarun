@@ -66,7 +66,7 @@ def upload_safetensor_to_s3(job_id, project_name, training_args):
         safetensor_files = glob.glob(f"{project_name}/*.safetensors")
         if not safetensor_files:
             logging.error(f"No .safetensor file found for job {job_id}")
-            return False
+            return False, None
 
         safetensor_file = safetensor_files[0]
         safetensor_name = os.path.basename(safetensor_file)
@@ -77,6 +77,9 @@ def upload_safetensor_to_s3(job_id, project_name, training_args):
         # Upload the safetensor file to S3 with the job_id as the filename
         s3_key = f"{project_name}/{job_id}.safetensors"
         s3.upload_file(safetensor_file, "myloras", s3_key)
+
+        # Add this line to store the full S3 path
+        full_s3_path = f"s3://myloras/{s3_key}"
 
         # Create metadata JSON
         metadata = {
@@ -106,14 +109,14 @@ def upload_safetensor_to_s3(job_id, project_name, training_args):
         s3.put_object(Body=metadata_json, Bucket="myloras", Key=metadata_key)
 
         logging.info(f"Uploaded {s3_key} and metadata to S3 bucket 'myloras' for job {job_id}")
-        return True
+        return True, full_s3_path  # Return the full S3 path along with success status
 
     except ClientError as e:
         logging.error(f"Error uploading files to S3: {e}")
-        return False
+        return False, None
     except NoCredentialsError:
         logging.error("AWS credentials not found or invalid")
-        return False
+        return False, None
 
 def download_s3_images(bucket_name, s3_folder, local_dir=None):
     try:
@@ -188,7 +191,8 @@ def call_callback_endpoint(job_id, project_name, s3_bucket, s3_folder, person_na
 
 def train_lora(job_id, args):
     logging.info(f"Starting training for job {job_id}")
-    jobs[job_id]["status"] = "DOWNLOADING"
+    jobs[job_id]["status"] = "BUSY"
+    jobs[job_id]["stage"] = "downloading"
     jobs[job_id]["message"] = "Downloading images from S3"
     jobs[job_id]["start_time"] = datetime.now()
     
@@ -199,9 +203,11 @@ def train_lora(job_id, args):
     if not s3_download_success:
         jobs[job_id]["status"] = "FAILED"
         jobs[job_id]["message"] = "Failed to download images from S3"
+        jobs[job_id]["stage"] = "download_failed"
         return
     
-    jobs[job_id]["status"] = "TRAINING"
+    jobs[job_id]["status"] = "BUSY"
+    jobs[job_id]["stage"] = "training"
     jobs[job_id]["message"] = "Training in progress"
     
     cmd = [
@@ -255,16 +261,20 @@ def train_lora(job_id, args):
         
         if process.returncode == 0:
             # Upload the generated .safetensor file and metadata to S3
-            upload_success = upload_safetensor_to_s3(job_id, args["project_name"], args)
+            upload_success, full_s3_path = upload_safetensor_to_s3(job_id, args["project_name"], args)
             if upload_success:
                 jobs[job_id]["status"] = "COMPLETED"
-                jobs[job_id]["message"] = "Training completed successfully. Safetensor file and metadata uploaded to S3."
-                logging.info(f"Job {job_id} completed successfully and safetensor with metadata uploaded")
+                jobs[job_id]["message"] = f"Training completed successfully. Safetensor file and metadata uploaded to S3. Full path: {full_s3_path}"
+                jobs[job_id]["stage"] = "completed"
+                jobs[job_id]["s3_upload_success"] = True
+                jobs[job_id]["safetensor_path"] = full_s3_path
+                logging.info(f"Job {job_id} completed successfully and safetensor with metadata uploaded to {full_s3_path}")
                 call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
                                        args["person_name"], "COMPLETED", datetime.now().isoformat())
             else:
                 jobs[job_id]["status"] = "FAILED"
                 jobs[job_id]["message"] = "Training completed, but failed to upload safetensor file and metadata to S3."
+                jobs[job_id]["stage"] = "upload_failed"
                 logging.error(f"Job {job_id} training completed, but failed to upload safetensor and metadata")
                 call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
                                        args["person_name"], "FAILED", datetime.now().isoformat(), 
@@ -273,6 +283,8 @@ def train_lora(job_id, args):
             jobs[job_id]["status"] = "FAILED"
             error_message = "\n".join(output[-10:])  # Capture last 10 lines of output
             jobs[job_id]["message"] = f"Training failed with return code {process.returncode}. Last output:\n{error_message}"
+            jobs[job_id]["stage"] = "training_failed"
+            jobs[job_id]["error_message"] = error_message
             logging.error(f"Job {job_id} failed with return code {process.returncode}")
             call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
                                    args["person_name"], "FAILED", datetime.now().isoformat(), 
@@ -280,6 +292,7 @@ def train_lora(job_id, args):
     except Exception as e:
         jobs[job_id]["status"] = "FAILED"
         jobs[job_id]["message"] = f"An error occurred: {str(e)}"
+        jobs[job_id]["stage"] = "error"
         logging.exception(f"An error occurred in job {job_id}")
         call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
                                args["person_name"], "FAILED", datetime.now().isoformat(), str(e))
@@ -350,13 +363,15 @@ def start_training():
         "status": "INITIALIZING",
         "message": "Job is being set up",
         "steps_completed": 0,
-        "num_steps": training_args["num_steps"]
+        "num_steps": training_args["num_steps"],
+        "stage": "initializing"
     }
     
     # Check if 'images/' directory exists and is not empty
     if not os.path.exists('images/') or not os.listdir('images/'):
         jobs[job_id]["status"] = "FAILED"
         jobs[job_id]["message"] = "'images/' directory not found or empty. Please add training images."
+        jobs[job_id]["stage"] = "no_images"
         logging.error(jobs[job_id]["message"])
         return jsonify({"error": jobs[job_id]["message"]}), 400
     
@@ -369,7 +384,7 @@ def start_training():
     thread.start()
     
     logging.info(f"Training thread started for job {job_id}")
-    return jsonify({"message": "Training started", "job_id": job_id}), 200
+    return jsonify({"message": "Training job initiated", "job_id": job_id}), 202
 
 @app.route('/status/<job_id>', methods=['GET'])
 def get_status(job_id):
@@ -382,7 +397,9 @@ def get_status(job_id):
         "status": jobs[job_id]["status"],
         "message": jobs[job_id].get("message", ""),
         "steps_completed": jobs[job_id].get("steps_completed", 0),
-        "total_steps": jobs[job_id].get("num_steps", 0)
+        "total_steps": jobs[job_id].get("num_steps", 0),
+        "stage": jobs[job_id].get("stage", "unknown"),
+        "safetensor_path": jobs[job_id].get("safetensor_path", "")
     }
     
     if "start_time" in jobs[job_id]:
@@ -430,14 +447,27 @@ def check_server_busy():
 
 def check_job_status():
     for job_id, job_info in jobs.items():
-        if job_info["status"] == "BUSY" and (job_info["process"] is None or job_info["process"].poll() is not None):
-            job_info["status"] = "FAILED"
-            job_info["message"] = "Process terminated unexpectedly"
-            logging.error(f"Job {job_id} process terminated unexpectedly")
+        if job_info["status"] == "BUSY":
+            if job_info["process"] is None or job_info["process"].poll() is not None:
+                job_info["status"] = "FAILED"
+                job_info["message"] = "Process terminated unexpectedly"
+                job_info["stage"] = "terminated"
+                logging.error(f"Job {job_id} process terminated unexpectedly")
+        elif job_info["status"] == "COMPLETED":
+            if "s3_upload_success" not in job_info:
+                job_info["message"] = "Training completed, but failed to upload safetensor file and metadata to S3."
+                job_info["stage"] = "upload_failed"
+            else:
+                job_info["message"] = f"Training completed successfully. Safetensor file and metadata uploaded to S3. Full path: {job_info.get('safetensor_path', 'Unknown')}"
+                job_info["stage"] = "completed"
+        elif job_info["status"] == "FAILED":
+            if "error_message" in job_info:
+                job_info["message"] = f"Training failed: {job_info['error_message']}"
+            job_info["stage"] = "failed"
 
 if __name__ == '__main__':
     from apscheduler.schedulers.background import BackgroundScheduler
     scheduler = BackgroundScheduler()
     scheduler.add_job(func=check_job_status, trigger="interval", seconds=60)
     scheduler.start()
-    app.run(host='0.0.0.0', port=5656, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
