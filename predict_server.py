@@ -80,11 +80,9 @@ s3 = session.client('s3')
 api_key = os.getenv('OPENAI_API_KEY')
 client = OpenAI(api_key=api_key)
 
-# Add these global variables
-current_job_id = None
-server_status = "IDLE"
-job_status = {}
-status_lock = threading.Lock()
+# Modify the jobs dictionary to include more information
+jobs = {}
+jobs_lock = threading.Lock()
 
 # Add this near the top of your file with other environment variables
 STATUS_UPDATE_ENDPOINT = os.environ.get('STATUS_UPDATE_ENDPOINT')
@@ -219,6 +217,13 @@ def update_job_status(job_id, status, error_message=None):
         logger.warning("STATUS_UPDATE_ENDPOINT not set. Skipping status update.")
         return
 
+    with jobs_lock:
+        if job_id not in jobs:
+            jobs[job_id] = {}
+        jobs[job_id]['status'] = status
+        if error_message:
+            jobs[job_id]['error'] = error_message
+
     payload = {
         "job_id": job_id,
         "status": status
@@ -233,11 +238,9 @@ def update_job_status(job_id, status, error_message=None):
     except requests.RequestException as e:
         logger.error(f"Failed to send status update for job {job_id}: {str(e)}")
 
-jobs = {}
-
 def process_image_generation(job_id, data):
     try:
-        jobs[job_id]['status'] = 'initializing'
+        update_job_status(job_id, 'initializing')
         
         lora_path = data.get('lora_path')
         crude_prompt = data.get('crude_prompt')
@@ -248,28 +251,28 @@ def process_image_generation(job_id, data):
         width = data.get('width', 1024)
         output_s3_folder_path = data.get('output_s3_folder_path')
 
-        jobs[job_id]['status'] = 'preparing_lora'
+        update_job_status(job_id, 'preparing_lora')
         s3_bucket = 'myloras'  # Replace with your actual S3 bucket name
         local_lora_path = get_local_lora_path(lora_path)
         download_lora_from_s3(s3_bucket, lora_path, local_lora_path)
 
-        jobs[job_id]['status'] = 'getting_lora_metadata'
+        update_job_status(job_id, 'getting_lora_metadata')
         lora_metadata_path = lora_path.rsplit('.', 1)[0] + '_metadata.json'
         lora_user_name = get_lora_metadata(s3_bucket, lora_metadata_path)
 
-        jobs[job_id]['status'] = 'refining_prompt'
+        update_job_status(job_id, 'refining_prompt')
         llm_response = generate_llm_response(crude_prompt, lora_user_name)
         response_json = convert_to_json(llm_response)
         refined_prompts = make_prompt_list(num_images, response_json)
 
-        jobs[job_id]['status'] = 'generating_seeds'
+        update_job_status(job_id, 'generating_seeds')
         seeds = [random.randint(0, 4294967295) for _ in range(num_images)]
         generators = [torch.Generator("cuda").manual_seed(seed) for seed in seeds]
 
-        jobs[job_id]['status'] = 'loading_lora_weights'
+        update_job_status(job_id, 'loading_lora_weights')
         pipe.load_lora_weights(local_lora_path)
 
-        jobs[job_id]['status'] = 'generating_images'
+        update_job_status(job_id, 'generating_images')
         batch_images = pipe(
             prompt=refined_prompts,
             negative_prompt=[negative_prompt] * num_images,
@@ -280,7 +283,7 @@ def process_image_generation(job_id, data):
             num_images_per_prompt=1
         ).images
 
-        jobs[job_id]['status'] = 'uploading_images'
+        update_job_status(job_id, 'uploading_images')
         s3_image_paths = []
         generated_images_s3_bucket = 'genimagesdxl'
         for i, image in enumerate(batch_images):
@@ -288,41 +291,35 @@ def process_image_generation(job_id, data):
             s3_path = upload_image_to_s3(generated_images_s3_bucket, image, output_s3_folder_path, filename)
             s3_image_paths.append(s3_path)
 
-        jobs[job_id]['status'] = 'unloading_lora_weights'
+        update_job_status(job_id, 'unloading_lora_weights')
         pipe.unload_lora_weights()
 
-        jobs[job_id]['status'] = 'completed'
-        jobs[job_id]['result'] = {
-            "job_id": job_id,
-            "image_paths": s3_image_paths,
-            "seeds": seeds,
-            "refined_prompts": refined_prompts
-        }
+        update_job_status(job_id, 'completed')
+        with jobs_lock:
+            jobs[job_id]['result'] = {
+                "job_id": job_id,
+                "image_paths": s3_image_paths,
+                "seeds": seeds,
+                "refined_prompts": refined_prompts
+            }
 
     except Exception as e:
         logger.error(f"Error in process_image_generation: {str(e)}", exc_info=True)
-        jobs[job_id]['status'] = 'failed'
-        jobs[job_id]['error'] = str(e)
-
-    finally:
-        update_job_status(job_id, jobs[job_id]['status'], jobs[job_id].get('error'))
+        update_job_status(job_id, 'failed', str(e))
 
 @app.route('/generate_images', methods=['POST'])
 def generate_images():
-    global server_status
-
-    with status_lock:
-        if server_status == "BUSY":
+    with jobs_lock:
+        busy_jobs = [job for job in jobs.values() if job.get('status') not in ['completed', 'failed']]
+        if busy_jobs:
             return jsonify({"error": "Server is busy processing another request"}), 503
-
-        server_status = "BUSY"
 
     logger.info("Received request to generate images")
     data = request.json
     logger.info(f"Request data: {data}")
 
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {'status': 'initializing'}
+    update_job_status(job_id, 'initializing')
 
     thread = threading.Thread(target=process_image_generation, args=(job_id, data))
     thread.start()
@@ -331,27 +328,36 @@ def generate_images():
 
 @app.route('/job_status/<job_id>', methods=['GET'])
 def get_job_status(job_id):
-    if job_id not in jobs:
-        return jsonify({'error': 'Job not found'}), 404
+    with jobs_lock:
+        if job_id not in jobs:
+            return jsonify({'error': 'Job not found'}), 404
 
-    job = jobs[job_id]
-    response = {'status': job['status']}
+        job = jobs[job_id]
+        response = {'status': job['status']}
 
-    if job['status'] == 'completed':
-        response['result'] = job['result']
-    elif job['status'] == 'failed':
-        response['error'] = job['error']
+        if job['status'] == 'completed':
+            response['result'] = job['result']
+        elif job['status'] == 'failed':
+            response['error'] = job.get('error', 'Unknown error')
 
     return jsonify(response)
 
 @app.route('/status', methods=['GET'])
 def get_status():
-    with status_lock:
+    with jobs_lock:
+        busy_jobs = [job for job in jobs.values() if job.get('status') not in ['completed', 'failed']]
+        current_job_id = busy_jobs[0]['job_id'] if busy_jobs else None
         return jsonify({
-            "status": server_status,
+            "status": "BUSY" if busy_jobs else "IDLE",
             "current_job_id": current_job_id
         })
-    
+
+@app.route('/busy', methods=['GET'])
+def get_busy_status():
+    with jobs_lock:
+        busy_jobs = [job for job in jobs.values() if job.get('status') not in ['completed', 'failed']]
+        return jsonify({"busy": bool(busy_jobs)})
+
 @app.route('/')
 def index():
     return jsonify({"message": "alive"})  # Updated to return JSON response
