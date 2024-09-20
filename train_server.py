@@ -311,7 +311,7 @@ def train_lora(job_id, args):
 
 @app.route('/')
 def index():
-    return "Alive"
+    return jsonify({"message": "alive"})  # Updated to return JSON response
 
 @app.route('/train', methods=['POST'])
 def start_training():
