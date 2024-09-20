@@ -351,6 +351,10 @@ def get_status():
             "status": server_status,
             "current_job_id": current_job_id
         })
+    
+@app.route('/')
+def index():
+    return jsonify({"message": "alive"})  # Updated to return JSON response
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
