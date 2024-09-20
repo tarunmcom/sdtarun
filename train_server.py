@@ -335,7 +335,6 @@ def start_training():
     if not re.match(r'^[a-zA-Z0-9_/-]{1,1024}$', args["s3_folder"]):
         return jsonify({"error": "Invalid s3_folder. Use alphanumeric characters, underscores, hyphens, or forward slashes."}), 400
 
-
     # Merge default config with provided args
     training_args = DEFAULT_CONFIG.copy()
     training_args.update(args)
@@ -366,19 +365,6 @@ def start_training():
         "num_steps": training_args["num_steps"],
         "stage": "initializing"
     }
-    
-    # Check if 'images/' directory exists, create it if not
-    if not os.path.exists('images/'):
-        os.makedirs('images/')
-        logging.info("Created 'images/' directory as it did not exist")
-    
-    # Check if the 'images/' directory is empty
-    if not os.listdir('images/'):
-        jobs[job_id]["status"] = "FAILED"
-        jobs[job_id]["message"] = "'images/' directory is empty. Please add training images."
-        jobs[job_id]["stage"] = "no_images"
-        logging.error(jobs[job_id]["message"])
-        return jsonify({"error": jobs[job_id]["message"]}), 400
     
     # Clean up any existing project folder with the same name
     if os.path.exists(training_args["project_name"]):
