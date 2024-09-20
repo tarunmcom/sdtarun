@@ -367,10 +367,15 @@ def start_training():
         "stage": "initializing"
     }
     
-    # Check if 'images/' directory exists and is not empty
-    if not os.path.exists('images/') or not os.listdir('images/'):
+    # Check if 'images/' directory exists, create it if not
+    if not os.path.exists('images/'):
+        os.makedirs('images/')
+        logging.info("Created 'images/' directory as it did not exist")
+    
+    # Check if the 'images/' directory is empty
+    if not os.listdir('images/'):
         jobs[job_id]["status"] = "FAILED"
-        jobs[job_id]["message"] = "'images/' directory not found or empty. Please add training images."
+        jobs[job_id]["message"] = "'images/' directory is empty. Please add training images."
         jobs[job_id]["stage"] = "no_images"
         logging.error(jobs[job_id]["message"])
         return jsonify({"error": jobs[job_id]["message"]}), 400
