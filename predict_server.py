@@ -341,7 +341,7 @@ def get_job_status(job_id):
         response = {'status': job['status']}
 
         if job['status'] == 'completed':
-            response['result'] = job['result']
+            response['result'] = job.get('result', {})  # Use .get() to avoid KeyError
         elif job['status'] == 'failed':
             response['error'] = job.get('error', 'Unknown error')
 
@@ -351,7 +351,7 @@ def get_job_status(job_id):
 def get_status():
     with jobs_lock:
         busy_jobs = [job for job in jobs.values() if job.get('status') not in ['completed', 'failed']]
-        current_job_id = busy_jobs[0]['job_id'] if busy_jobs else None
+        current_job_id = busy_jobs[0].get('job_id') if busy_jobs else None
         return jsonify({
             "status": "BUSY" if busy_jobs else "IDLE",
             "current_job_id": current_job_id
@@ -360,8 +360,7 @@ def get_status():
 @app.route('/busy', methods=['GET'])
 def get_busy_status():
     with jobs_lock:
-        busy_jobs = [job for job in jobs.values() if job.get('status') not in ['completed', 'failed']]
-        return jsonify({"busy": bool(busy_jobs)})
+        return jsonify({"busy": any(job.get('status') not in ['completed', 'failed'] for job in jobs.values())})
 
 @app.route('/')
 def index():
