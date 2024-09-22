@@ -240,6 +240,8 @@ def update_job_status(job_id, status, error_message=None):
 
 def process_image_generation(job_id, data):
     try:
+        with jobs_lock:
+            jobs[job_id] = {'status': 'initializing'}
         update_job_status(job_id, 'initializing')
         
         lora_path = data.get('lora_path')
@@ -296,12 +298,15 @@ def process_image_generation(job_id, data):
 
         update_job_status(job_id, 'completed')
         with jobs_lock:
-            jobs[job_id]['result'] = {
-                "job_id": job_id,
-                "image_paths": s3_image_paths,
-                "seeds": seeds,
-                "refined_prompts": refined_prompts
-            }
+            if job_id in jobs:  # Check if job_id exists before updating
+                jobs[job_id]['result'] = {
+                    "job_id": job_id,
+                    "image_paths": s3_image_paths,
+                    "seeds": seeds,
+                    "refined_prompts": refined_prompts
+                }
+            else:
+                logger.warning(f"Job {job_id} not found in jobs dictionary when trying to update result")
 
     except Exception as e:
         logger.error(f"Error in process_image_generation: {str(e)}", exc_info=True)
