@@ -212,31 +212,52 @@ def get_lora_metadata(bucket_name, lora_path):
         logger.error(f"Error reading LORA metadata from S3: {str(e)}")
         return 'anonymous'
 
-def update_job_status(job_id, status, error_message=None):
-    if not STATUS_UPDATE_ENDPOINT:
-        logger.warning("STATUS_UPDATE_ENDPOINT not set. Skipping status update.")
-        return
-
-    with jobs_lock:
-        if job_id not in jobs:
-            jobs[job_id] = {}
-        jobs[job_id]['status'] = status
+def update_job_status(job_id: str, status: str, error_message=None):
+    with jobs_lock:  # Ensure thread safety
+        job = get_job_by_id(job_id)
+        if job is None:
+            job = {'id': job_id}
+        job['status'] = status
         if error_message:
-            jobs[job_id]['error'] = error_message
+            job['error_message'] = error_message
+        save_job(job)
+    
+    # Update external status if endpoint is set
+    status_update_endpoint = os.getenv('STATUS_UPDATE_ENDPOINT')
+    if status_update_endpoint:
+        try:
+            response = requests.post(
+                status_update_endpoint,
+                json={'job_id': job_id, 'status': status},
+                headers={'Content-Type': 'application/json'}
+            )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            logger.error(f"Failed to update status at {status_update_endpoint}: {str(e)}")
+    else:
+        logger.info("STATUS_UPDATE_ENDPOINT not set, skipping external status update")
 
-    payload = {
-        "job_id": job_id,
-        "status": status
-    }
-    if error_message:
-        payload["error_message"] = error_message
+    # Update global status
+    update_global_status(job_id, status)
 
-    try:
-        response = requests.post(STATUS_UPDATE_ENDPOINT, json=payload)
-        response.raise_for_status()
-        logger.info(f"Status update sent for job {job_id}: {status}")
-    except requests.RequestException as e:
-        logger.error(f"Failed to send status update for job {job_id}: {str(e)}")
+def update_global_status(job_id: str, status: str):
+    global current_job_id, global_status
+    with jobs_lock:  # Ensure thread safety
+        if status in ['completed', 'failed']:
+            current_job_id = None
+            global_status = 'IDLE'
+        else:
+            current_job_id = job_id
+            global_status = 'BUSY'
+
+# In-memory job storage for demonstration purposes
+jobs = {}
+
+def get_job_by_id(job_id):
+    return jobs.get(job_id)
+
+def save_job(job):
+    jobs[job['id']] = job
 
 def process_image_generation(job_id, data):
     try:
@@ -337,29 +358,15 @@ def generate_images():
 
 @app.route('/job_status/<job_id>', methods=['GET'])
 def get_job_status(job_id):
-    with jobs_lock:
-        if job_id not in jobs:
-            return jsonify({'error': 'Job not found'}), 404
-
-        job = jobs[job_id]
-        response = {'status': job['status']}
-
-        if job['status'] == 'completed':
-            response['result'] = job.get('result', {})  # Use .get() to avoid KeyError
-        elif job['status'] == 'failed':
-            response['error'] = job.get('error', 'Unknown error')
-
-    return jsonify(response)
+    job = get_job_by_id(job_id)
+    if job:
+        return jsonify({'job_id': job_id, 'status': job['status']})
+    else:
+        return jsonify({'error': 'Job not found'}), 404
 
 @app.route('/status', methods=['GET'])
 def get_status():
-    with jobs_lock:
-        busy_jobs = [job for job in jobs.values() if job.get('status') not in ['completed', 'failed']]
-        current_job_id = busy_jobs[0].get('job_id') if busy_jobs else None
-        return jsonify({
-            "status": "BUSY" if busy_jobs else "IDLE",
-            "current_job_id": current_job_id
-        })
+    return jsonify({'current_job_id': current_job_id, 'status': global_status})
 
 @app.route('/busy', methods=['GET'])
 def get_busy_status():
