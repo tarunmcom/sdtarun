@@ -216,8 +216,9 @@ def update_job_status(job_id: str, status: str, error_message=None):
     with jobs_lock:  # Ensure thread safety
         job = get_job_by_id(job_id)
         if job is None:
-            job = {'id': job_id}
-        job['status'] = status
+            job = {'job_id': job_id, 'status': status}
+        else:
+            job['status'] = status
         if error_message:
             job['error_message'] = error_message
         save_job(job)
@@ -257,12 +258,14 @@ def get_job_by_id(job_id):
     return jobs.get(job_id)
 
 def save_job(job):
-    jobs[job['id']] = job
+    if 'job_id' not in job:
+        raise ValueError("Job must have a 'job_id' key")
+    jobs[job['job_id']] = job
 
 def process_image_generation(job_id, data):
     try:
         with jobs_lock:
-            jobs[job_id] = {'status': 'initializing'}
+            jobs[job_id] = {'job_id': job_id, 'status': 'initializing'}
         update_job_status(job_id, 'initializing')
         
         lora_path = data.get('lora_path')
@@ -360,7 +363,20 @@ def generate_images():
 def get_job_status(job_id):
     job = get_job_by_id(job_id)
     if job:
-        return jsonify({'job_id': job_id, 'status': job['status']})
+        response = {'job_id': job_id, 'status': job['status']}
+        
+        if job['status'] == 'failed':
+            response['error_message'] = job.get('error_message', 'Unknown error')
+        
+        elif job['status'] == 'completed':
+            result = job.get('result', {})
+            response.update({
+                'image_paths': result.get('image_paths', []),
+                'seeds': result.get('seeds', []),
+                'refined_prompts': result.get('refined_prompts', [])
+            })
+        
+        return jsonify(response)
     else:
         return jsonify({'error': 'Job not found'}), 404
 
