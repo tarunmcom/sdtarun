@@ -145,8 +145,8 @@ def download_s3_images(bucket_name, s3_folder, local_dir=None):
             # Get the file path
             s3_file = obj['Key']
             
-            # Skip if it's a folder
-            if s3_file.endswith('/'):
+            # Skip if it's a folder or if it's in the "_thumbs" folder
+            if s3_file.endswith('/') or f'{s3_folder}_thumbs' in s3_file:
                 continue
             
             # Remove the folder name from the file path
@@ -461,4 +461,4 @@ if __name__ == '__main__':
     scheduler = BackgroundScheduler()
     scheduler.add_job(func=check_job_status, trigger="interval", seconds=60)
     scheduler.start()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
