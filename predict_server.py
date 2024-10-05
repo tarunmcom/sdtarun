@@ -408,7 +408,7 @@ def get_busy_status():
 
 @app.route('/')
 def index():
-    return jsonify({"message": "alive"})  # Updated to return JSON response
+    return jsonify({"message": "alive", "server_type":"Predict"})  # Updated to return JSON response
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
