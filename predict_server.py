@@ -18,6 +18,7 @@ import uuid
 import threading
 import os.path
 import requests
+from PIL import Image
 
 # Use AWS params from env vars
 AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
@@ -107,11 +108,21 @@ def download_lora_from_s3(bucket_name, lora_path, local_path):
 
 def upload_image_to_s3(bucket_name, image, s3_folder_path, filename):
     try:
+        # Original image
         buffered = BytesIO()
         image.save(buffered, format="PNG")
         
-        # Create the full S3 path
+        # Create thumbnail
+        thumb_size = (200, 200)  # You can adjust this size as needed
+        thumbnail = image.copy()
+        thumbnail.thumbnail(thumb_size)
+        thumb_buffered = BytesIO()
+        thumbnail.save(thumb_buffered, format="PNG")
+        
+        # Create the full S3 paths
         s3_path = f"{s3_folder_path}/{filename}"
+        thumb_filename = f"{os.path.splitext(filename)[0]}_thumb.png"
+        thumb_s3_path = f"{s3_folder_path}/{thumb_filename}"
         
         # Ensure the folder structure exists
         folder_parts = s3_folder_path.split('/')
@@ -119,10 +130,15 @@ def upload_image_to_s3(bucket_name, image, s3_folder_path, filename):
             folder_path = '/'.join(folder_parts[:i]) + '/'
             s3.put_object(Bucket=bucket_name, Key=folder_path, Body='')
         
-        # Upload the image
+        # Upload the original image
         s3.put_object(Bucket=bucket_name, Key=s3_path, Body=buffered.getvalue())
         logger.info(f"Uploaded image to S3: {s3_path}")
-        return f"{s3_folder_path}/{filename}"  # Return the full S3 path
+        
+        # Upload the thumbnail
+        s3.put_object(Bucket=bucket_name, Key=thumb_s3_path, Body=thumb_buffered.getvalue())
+        logger.info(f"Uploaded thumbnail to S3: {thumb_s3_path}")
+        
+        return f"{s3_folder_path}/{filename}"  # Return the full S3 path of the original image
     except ClientError as e:
         logger.error(f"Error uploading image to S3: {str(e)}")
         raise
