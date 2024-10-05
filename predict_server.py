@@ -109,7 +109,17 @@ def upload_image_to_s3(bucket_name, image, s3_folder_path, filename):
     try:
         buffered = BytesIO()
         image.save(buffered, format="PNG")
+        
+        # Create the full S3 path
         s3_path = f"{s3_folder_path}/{filename}"
+        
+        # Ensure the folder structure exists
+        folder_parts = s3_folder_path.split('/')
+        for i in range(1, len(folder_parts) + 1):
+            folder_path = '/'.join(folder_parts[:i]) + '/'
+            s3.put_object(Bucket=bucket_name, Key=folder_path, Body='')
+        
+        # Upload the image
         s3.put_object(Bucket=bucket_name, Key=s3_path, Body=buffered.getvalue())
         logger.info(f"Uploaded image to S3: {s3_path}")
         return s3_path
@@ -312,9 +322,14 @@ def process_image_generation(job_id, data):
         update_job_status(job_id, 'uploading_images')
         s3_image_paths = []
         generated_images_s3_bucket = 'genimagesdxl'
+        
+        # Parse the output_s3_folder_path
+        user_id, lora_id, predict_job_id = data['output_s3_folder_path'].split('/')
+        
         for i, image in enumerate(batch_images):
             filename = f"{job_id}_{i}_{uuid.uuid4()}.png"
-            s3_path = upload_image_to_s3(generated_images_s3_bucket, image, output_s3_folder_path, filename)
+            s3_folder_path = f"{user_id}/{lora_id}/{predict_job_id}"
+            s3_path = upload_image_to_s3(generated_images_s3_bucket, image, s3_folder_path, filename)
             s3_image_paths.append(s3_path)
 
         update_job_status(job_id, 'unloading_lora_weights')
