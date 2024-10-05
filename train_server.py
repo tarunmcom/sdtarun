@@ -52,7 +52,7 @@ AWS_REGION = os.environ.get('AWS_REGION', 'us-east-2')
 if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]):
     raise EnvironmentError("AWS credentials are not properly set in environment variables.")
 
-def upload_safetensor_to_s3(job_id, project_name, training_args):
+def upload_safetensor_to_s3(job_id, user_unique_id, project_name, training_args):
     try:
         # Create a boto3 client
         session = boto3.Session(
@@ -72,10 +72,10 @@ def upload_safetensor_to_s3(job_id, project_name, training_args):
         safetensor_name = os.path.basename(safetensor_file)
 
         # Create the folder structure in the S3 bucket if it doesn't exist
-        s3.put_object(Bucket="myloras", Key=f"{project_name}/")
+        s3.put_object(Bucket="myloras", Key=f"{user_unique_id}/{project_name}/")
 
         # Upload the safetensor file to S3 with the job_id as the filename
-        s3_key = f"{project_name}/{job_id}.safetensors"
+        s3_key = f"{user_unique_id}/{project_name}/{job_id}.safetensors"
         s3.upload_file(safetensor_file, "myloras", s3_key)
 
         # Add this line to store the full S3 path
@@ -84,6 +84,7 @@ def upload_safetensor_to_s3(job_id, project_name, training_args):
         # Create metadata JSON
         metadata = {
             "job_id": job_id,
+            "user_unique_id": user_unique_id,
             "project_name": project_name,
             "person_name": training_args["person_name"],
             "training_params": {
@@ -105,7 +106,7 @@ def upload_safetensor_to_s3(job_id, project_name, training_args):
 
         # Upload metadata JSON to S3
         metadata_json = json.dumps(metadata, indent=2)
-        metadata_key = f"{project_name}/{job_id}_metadata.json"
+        metadata_key = f"{user_unique_id}/{project_name}/{job_id}_metadata.json"
         s3.put_object(Body=metadata_json, Bucket="myloras", Key=metadata_key)
 
         logging.info(f"Uploaded {s3_key} and metadata to S3 bucket 'myloras' for job {job_id}")
@@ -261,7 +262,7 @@ def train_lora(job_id, args):
         
         if process.returncode == 0:
             # Upload the generated .safetensor file and metadata to S3
-            upload_success, full_s3_path = upload_safetensor_to_s3(job_id, args["project_name"], args)
+            upload_success, full_s3_path = upload_safetensor_to_s3(job_id, args["user_unique_id"], args["project_name"], args)
             if upload_success:
                 jobs[job_id]["status"] = "COMPLETED"
                 jobs[job_id]["message"] = f"Training completed successfully. Safetensor file and metadata uploaded to S3. Full path: {full_s3_path}"
@@ -316,13 +317,17 @@ def index():
 @app.route('/train', methods=['POST'])
 def start_training():
     args = request.json
-    required_args = ["job_id", "project_name", "s3_bucket", "s3_folder", "person_name"]
+    required_args = ["job_id", "user_unique_id", "project_name", "s3_bucket", "s3_folder", "person_name"]
     
     for arg in required_args:
         if arg not in args:
             logging.warning(f"Missing required argument: {arg}")
             return jsonify({"error": f"Missing required argument: {arg}"}), 400
     
+    # Validate user_unique_id
+    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', args["user_unique_id"]):
+        return jsonify({"error": "Invalid user_unique_id. Must be a valid UUID."}), 400
+
     # Validate project_name
     if not re.match(r'^[a-zA-Z0-9_-]{3,63}$', args["project_name"]):
         return jsonify({"error": "Invalid project_name. Use 3-63 alphanumeric characters, underscores, or hyphens."}), 400
