@@ -122,7 +122,7 @@ def upload_image_to_s3(bucket_name, image, s3_folder_path, filename):
         # Upload the image
         s3.put_object(Bucket=bucket_name, Key=s3_path, Body=buffered.getvalue())
         logger.info(f"Uploaded image to S3: {s3_path}")
-        return s3_path
+        return f"{s3_folder_path}/{filename}"  # Return the full S3 path
     except ClientError as e:
         logger.error(f"Error uploading image to S3: {str(e)}")
         raise
@@ -327,17 +327,19 @@ def process_image_generation(job_id, data):
         user_id, lora_id, predict_job_id = data['output_s3_folder_path'].split('/')
         
         for i, image in enumerate(batch_images):
-            filename = f"{job_id}_{i}_{uuid.uuid4()}.png"
+            filename = f"{i}_{uuid.uuid4()}.png"
             s3_folder_path = f"{user_id}/{lora_id}/{predict_job_id}"
             s3_path = upload_image_to_s3(generated_images_s3_bucket, image, s3_folder_path, filename)
-            s3_image_paths.append(s3_path)
+            # Construct the correct S3 path for the response
+            correct_s3_path = f"{s3_folder_path}/{filename}"
+            s3_image_paths.append(correct_s3_path)
 
         update_job_status(job_id, 'unloading_lora_weights')
         pipe.unload_lora_weights()
 
         update_job_status(job_id, 'completed')
         with jobs_lock:
-            if job_id in jobs:  # Check if job_id exists before updating
+            if job_id in jobs:
                 jobs[job_id]['result'] = {
                     "job_id": job_id,
                     "image_paths": s3_image_paths,
