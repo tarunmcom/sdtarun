@@ -360,7 +360,8 @@ def process_image_generation(job_id, data):
                     "job_id": job_id,
                     "image_paths": s3_image_paths,
                     "seeds": seeds,
-                    "refined_prompts": refined_prompts
+                    "refined_prompts": refined_prompts,
+                    "crude_prompt": crude_prompt  # Add the original crude prompt
                 }
             else:
                 logger.warning(f"Job {job_id} not found in jobs dictionary when trying to update result")
@@ -406,7 +407,8 @@ def get_job_status(job_id):
             response.update({
                 'image_paths': result.get('image_paths', []),
                 'seeds': result.get('seeds', []),
-                'refined_prompts': result.get('refined_prompts', [])
+                'refined_prompts': result.get('refined_prompts', []),
+                'crude_prompt': result.get('crude_prompt', '')  # Add the crude prompt to the response
             })
         
         return jsonify(response)
