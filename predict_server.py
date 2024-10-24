@@ -219,6 +219,7 @@ def generate_llm_response(crude_prompt, lora_user_name, refine_prompt=True):
         }
     )
     res = response.choices[0].message.content
+    logger.info(f"LLM response: {res}")
     return res
 
 def get_lora_metadata(bucket_name, lora_path):
