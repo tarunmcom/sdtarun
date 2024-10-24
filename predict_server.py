@@ -180,35 +180,43 @@ def convert_to_json(input_text):
         'or valid JSON with "prompts" key containing a list.'
     )
 
-def generate_llm_response(crude_prompt, lora_user_name):
-    crude_prompt = f"prompt: {crude_prompt}, name: {lora_user_name}"
+def generate_llm_response(crude_prompt, lora_user_name, refine_prompt=True):
+    crude_prompt = json.dumps({"prompt": crude_prompt, "name": lora_user_name})
     logging.info(f"crude_prompt: {crude_prompt}")
+    if refine_prompt:
+        theprompt="You are a  SDXL Prompt Engineering Assistant:-\nCore Function:\nYou are a specialized prompt engineer for SDXL (Stable Diffusion XL) image generation, focusing on high-quality human subject photography. Your primary goal is to transform user inputs into technically precise prompts that maximize subject clarity and detail.\n\nTechnical Parameters:\nModel: SDXL (Stable Diffusion XL)\nPrompt Length: 60-70 words optimal\nOutput Format: JSON array of 4-5 variations\nSubject Focus: 50-70% of frame coverage for human subjects\n\nComposition Guidelines:-\nPreferred Shot Types:\nClose-up (head and shoulders)\nMedium shot (waist up)\nPortrait (head to mid-chest)\nThree-quarter shot (head to thighs)\n\nTechnical Specifications to Include:\nCamera type (e.g., \"shot on Canon EOS R5\")\nLens details (e.g., \"85mm f/1.4 portrait lens\")\nLighting conditions (e.g., \"natural lighting\", \"studio lighting\")\nFocus characteristics (e.g., \"shallow depth of field\")\nBackground treatment (e.g., \"bokeh effect\", \"soft blur\")\n\nRequired Elements for Each Prompt:\nSubject positioning\nFacial detail emphasis\nLighting description\nBackground treatment\nTechnical camera parameters\nArtistic style or mood\n\nInput Processing:\nParse encoded name format (e.g., \"Name_xyz\")\nMaintain name exactly as provided\nIntegrate name naturally into prompt structure\n\nSafety and Restrictions:-\nReject requests for:\nNudity\nExplicit content\nHarmful or dangerous scenarios\nReturn error message: {\"error\": \"Cannot generate inappropriate content. Please provide appropriate prompt.\"}\n\nExample Input/Output:-\nInput:\njsonCopy{\n    \"prompt\": \"I am riding a horse\",\n    \"name\": \"Tarun_qwer\"\n}\nOutput:\njsonCopy{\n    \"prompts\": [\n        \"Professional portrait of Tarun_qwer on horseback, shot on Canon EOS R5 with 85mm f/1.4 lens, natural lighting, shallow depth of field, subject fills 70% of frame, detailed facial features, golden hour lighting, blurred pastoral background\",\n        \n        \"Dramatic close-up of Tarun_qwer's face and upper body while horse riding, shot on Sony A7IV, 70-200mm lens at f/2.8, studio lighting setup, crisp detail on facial features, motion-implied pose, elegant riding attire, soft bokeh background\",\n        \n        \"Intimate portrait of Tarun_qwer connecting with the horse, medium shot, captured with Nikon Z9, 50mm prime lens, dramatic side lighting, sharp focus on subject's expression, rich color grading, minimal background elements\",\n        \n        \"Dynamic three-quarter shot of Tarun_qwer in equestrian pose, photographed with Fujifilm GFX 100S, 110mm f/2 lens, professional studio lighting, emphasis on texture and detail, subject centered, atmospheric background blur\"\n    ]\n}\nPrompt Enhancement Strategy:\nStart with core subject description\nAdd technical camera specifications\nInclude lighting and atmosphere details\nSpecify background treatment\nAdd artistic style elements\nEnsure subject prominence\n\nQuality Control Checklist:-\nSubject visibility: ≥50% of frame\nBackground: Minimal and blurred\nTechnical details: Complete and accurate\nComposition: Clear and focused\nLength: Within 60-70 words\nSafety: Content appropriate\nRemember: Focus on creating prompts that will generate clear, professional-quality images with strong emphasis on human subjects while maintaining appropriate content standards."
+    else:
+        theprompt="Your task is to modify an image generation prompt to include the person name as the subject of the prompt. You will be given a json with prompt and an encoded person name, you have to correctly add the encoded person name in the prompt. Example:-\nExample Input/Output:-\nInput:\njsonCopy{\n    \"prompt\": \"I am riding a horse\",\n    \"name\": \"Tarun_qwer\"\n}\nOutput:\njsonCopy{\n    \"prompts\": [\n        \"Tarun_qwer riding a horse.\",\n    ]\n}\n'''\nSafety and Restrictions:-\nReject requests for:\nNudity\nExplicit content\nHarmful or dangerous scenarios\nReturn error message: {\"error\": \"Cannot generate inappropriate content. Please provide appropriate prompt.\"}\n'''\nDo not add the additional info, just identify  the main subject and use the provided encoded person name at the place."
     response = client.chat.completions.create(
-        model="gpt-4",
+        model="gpt-4o-mini",
         messages=[
-        {
-            "role": "system",
-            "content": [
             {
-                "type": "text",
-                "text": "system_instruction=\"You are a helpful Prompt Engineer. You are tasked to refine user's input prompt for image generation using stable diffusion model version SDXL.The SDXL model generates good images if only the human subject is mostly visible and there is no or minimal background. If you try to generate wide angle shot or too many subjects in the image, then SDXL gives poor response, so you should avoid this by refining the prompt. You should refine the prompts in such a way that it follows users input prompt but the main human surject must occupy the maximum space in the image and background is minimal or blurred. You should also utilize the sdxl prompt generation skills by providing shot description, camera and lenses parameters that generate these type of shots. You will receive the name of a person in encoded form and you should use that in your prompt. Example:\\n'''\\nUser: {\\\"prompt\\\":\\\"I am riding a horse\\\", \\\"name\\\":\\\"Tarun_qwer\\\"} \\nrefined prompt:- \\\"A close-up of Tarun_qwer on a horse, with focus on the detailed subject while the background is blurred.Tarun_qwer is in riding attire, and the horse is in motion, emphasizing their expressions and textures, Tarun_qwer has proper eyes\\\"\\n'''\\nNever use wide angle or long distance shots. You may use the following shots 1. close up shot 2. medium shot 3. portrait. You may also use lenses focus and parameters that generate these type of shots.\\nAlso add relevant info so that face is generated well. And generate 4-5 different prompts from one prompt.\\nAlways generate prompt in 50-60 words because above that response is not good.\\nMake sure you give output in the following format:-\\n'''\\n {\\\"prompts\\\":[\\\"<PROMPT>\\\", \\\"<PROMPT>\\\",....]}\\n'''\\nYou must always generate prompts so that human subject occupies the maximum area in the image and more detailing on human face. You must add relevant face expression of the human subject more, so that face detailing is good. Image Generation models are bad in generating hands and fingers, so you should cleverly prompt to hide hands and finger behind any relevant object or in pocket or behind back etc. \","            }
-            ]
-        },
-        {
-            "role": "user",
-            "content": [
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": theprompt
+                    }
+                ]
+            },
             {
-                "type": "text",
-                "text": crude_prompt
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": crude_prompt
+                    }
+                ]
             }
-            ]
-        },
         ],
-        temperature=0.9,
+        temperature=1,
         max_tokens=2048,
         top_p=1,
         frequency_penalty=0,
-        presence_penalty=0
+        presence_penalty=0,
+        response_format={
+            "type": "json_object"
+        }
     )
     res = response.choices[0].message.content
     return res
@@ -311,10 +319,30 @@ def process_image_generation(job_id, data):
         lora_metadata_path = lora_path.rsplit('.', 1)[0] + '_metadata.json'
         lora_user_name = get_lora_metadata(s3_bucket, lora_metadata_path)
 
-        update_job_status(job_id, 'refining_prompt')
-        llm_response = generate_llm_response(crude_prompt, lora_user_name)
-        response_json = convert_to_json(llm_response)
-        refined_prompts = make_prompt_list(num_images, response_json)
+        use_prompt_refiner = data.get('use_prompt_refiner', True)
+        
+        if use_prompt_refiner:
+            update_job_status(job_id, 'refining_prompt')
+            llm_response = generate_llm_response(crude_prompt, lora_user_name)
+            response_json = convert_to_json(llm_response)
+            
+            # Check for error in LLM response
+            if isinstance(response_json, dict) and "error" in response_json:
+                error_message = response_json["error"]
+                raise ValueError(f"LLM error: {error_message}")
+            
+            refined_prompts = make_prompt_list(num_images, response_json)
+        else:
+            update_job_status(job_id, 'modifying_prompt')
+            llm_response = generate_llm_response(crude_prompt, lora_user_name, True)
+            response_json = convert_to_json(llm_response)
+            
+            # Check for error in LLM response
+            if isinstance(response_json, dict) and "error" in response_json:
+                error_message = response_json["error"]
+                raise ValueError(f"LLM error: {error_message}")
+            
+            refined_prompts = [refined_prompts] * num_images
 
         update_job_status(job_id, 'generating_seeds')
         seeds = [random.randint(0, 4294967295) for _ in range(num_images)]
@@ -368,6 +396,9 @@ def process_image_generation(job_id, data):
     except Exception as e:
         logger.error(f"Error in process_image_generation: {str(e)}", exc_info=True)
         update_job_status(job_id, 'failed', str(e))
+        with jobs_lock:
+            if job_id in jobs:
+                jobs[job_id]['error_message'] = str(e)
 
 @app.route('/generate_images', methods=['POST'])
 def generate_images():
