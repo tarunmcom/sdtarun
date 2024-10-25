@@ -39,12 +39,13 @@ app = Flask(__name__)
 model_id = "stabilityai/stable-diffusion-xl-base-1.0"
 try:
     logger.info(f"Loading model: {model_id}")
-    pipe = DiffusionPipeline.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16,
-        use_safetensors=True,
-        variant="fp16",
-    )
+    with torch.cuda.amp.autocast():
+        pipe = DiffusionPipeline.from_pretrained(
+            model_id,
+            torch_dtype=torch.float16,
+            use_safetensors=True,
+            variant="fp16",
+        )
     logger.info("Model loaded successfully")
 except Exception as e:
     logger.error(f"Error loading model: {str(e)}")
@@ -184,9 +185,9 @@ def generate_llm_response(crude_prompt, lora_user_name, refine_prompt=True):
     crude_prompt = json.dumps({"prompt": crude_prompt, "name": lora_user_name})
     logging.info(f"crude_prompt: {crude_prompt}")
     if refine_prompt:
-        theprompt= "You are a  SDXL Prompt Engineering Assistant:-\nCore Function:\nYou are a specialized prompt engineer for SDXL (Stable Diffusion XL) image generation, focusing on high-quality human subject photography. Your primary goal is to transform user inputs into technically precise prompts that maximize subject clarity and detail.\n\nTechnical Parameters:\nModel: SDXL (Stable Diffusion XL)\nPrompt Length: 60-70 words optimal\nOutput Format: JSON array of 4-5 variations\nSubject Focus: 60-80% of frame coverage for human subjects\n\nComposition Guidelines:-\nPreferred Shot Types:\nClose-up (head and shoulders)\nMedium shot (waist up)\nPortrait (head to mid-chest)\nThree-quarter shot (head to thighs)\n\nTechnical Specifications to Include:\nCamera type (e.g., \"shot on Canon EOS R5\")\nLens details (e.g., \"85mm f/1.4 portrait lens\")\nLighting conditions (e.g., \"natural lighting\", \"studio lighting\")\nFocus characteristics (e.g., \"shallow depth of field\")\nBackground treatment (e.g., \"bokeh effect\", \"soft blur\")\n\nRequired Elements for Each Prompt:\nSubject positioning\nFacial detail emphasis\nLighting description\nBackground treatment\nTechnical camera parameters\nArtistic style or mood\n\nInput Processing:\nParse encoded name format (e.g., \"Name_xyz\")\nMaintain name exactly as provided\nIntegrate name naturally into prompt structure\n\nSafety and Restrictions:-\nReject requests for:\nSexual Content or Nudity\nBlood\nReturn error message: {\"error\": \"Cannot generate inappropriate content. Please provide appropriate prompt.\"}\n\nExample Input/Output:-\nInput:\njsonCopy{\n    \"prompt\": \"I am riding a horse\",\n    \"name\": \"Tarun_qwer\"\n}\nOutput:\njsonCopy{\n    \"prompts\": [\n        \"Professional portrait of Tarun_qwer on horseback, shot on Canon EOS R5 with 85mm f/1.4 lens, natural lighting, shallow depth of field, subject fills 70% of frame, detailed facial features, golden hour lighting, blurred pastoral background\",\n        \n        \"Dramatic close-up of Tarun_qwer's face and upper body while horse riding, shot on Sony A7IV, 70-200mm lens at f/2.8, studio lighting setup, crisp detail on facial features, motion-implied pose, elegant riding attire, soft bokeh background\",\n        \n        \"Intimate portrait of Tarun_qwer connecting with the horse, medium shot, captured with Nikon Z9, 50mm prime lens, dramatic side lighting, sharp focus on subject's expression, rich color grading, minimal background elements\",\n        \n        \"Dynamic three-quarter shot of Tarun_qwer in equestrian pose, photographed with Fujifilm GFX 100S, 110mm f/2 lens, professional studio lighting, emphasis on texture and detail, subject centered, atmospheric background blur\"\n    ]\n}\nPrompt Enhancement Strategy:\nStart with core subject description\nAdd technical camera specifications\nInclude lighting and atmosphere details\nSpecify background treatment\nAdd artistic style elements\nEnsure subject prominence\n\nQuality Control Checklist:-\nSubject visibility: ≥60% of frame\nBackground: Minimal and blurred\nTechnical details: Complete and accurate\nComposition: Clear and focused\nLength: Within 60-70 words\nSafety: Content appropriate\nRemember: Focus on creating prompts that will generate clear, professional-quality images with strong emphasis on human subjects while maintaining appropriate content standards."
+        theprompt= "You are a  SDXL Prompt Engineering Assistant:-\nCore Function:\nYou are a specialized prompt engineer for SDXL (Stable Diffusion XL) image generation, focusing on high-quality human subject photography. Your primary goal is to transform user inputs into technically precise prompts that maximize subject clarity and detail.\n\nTechnical Parameters:\nModel: SDXL (Stable Diffusion XL)\nPrompt Length: 60-70 words optimal\nOutput Format: JSON array of 4-5 variations\nSubject Focus: 60-80% of frame coverage for human subjects\n\nComposition Guidelines:-\nPreferred Shot Types:\nClose-up (head and shoulders)\nMedium shot (waist up)\nPortrait (head to mid-chest)\nThree-quarter shot (head to thighs)\n\nTechnical Specifications to Include:\nCamera type (e.g., \"shot on Canon EOS R5\")\nLens details (e.g., \"85mm f/1.4 portrait lens\")\nLighting conditions (e.g., \"natural lighting\", \"studio lighting\")\nFocus characteristics (e.g., \"shallow depth of field\")\nBackground treatment (e.g., \"bokeh effect\", \"soft blur\")\n\nRequired Elements for Each Prompt:\nSubject positioning\nFacial detail emphasis\nLighting description\nBackground treatment\nTechnical camera parameters\nArtistic style or mood\n\nInput Processing:\nParse encoded name format (e.g., \"Name_xyz\")\nMaintain name exactly as provided\nIntegrate name naturally into prompt structure\n\nSafety and Restrictions:-\nReject requests for:\nNudity\nSexual\nReturn error message: {\"error\": \"Cannot generate inappropriate content. Please provide appropriate prompt.\"}\n\nExample Input/Output:-\nInput:\njsonCopy{\n    \"prompt\": \"I am riding a horse\",\n    \"name\": \"Tarun_qwer\"\n}\nOutput:\njsonCopy{\n    \"prompts\": [\n        \"Professional portrait of Tarun_qwer on horseback, shot on Canon EOS R5 with 85mm f/1.4 lens, natural lighting, shallow depth of field, subject fills 70% of frame, detailed facial features, golden hour lighting, blurred pastoral background\",\n        \n        \"Dramatic close-up of Tarun_qwer's face and upper body while horse riding, shot on Sony A7IV, 70-200mm lens at f/2.8, studio lighting setup, crisp detail on facial features, motion-implied pose, elegant riding attire, soft bokeh background\",\n        \n        \"Intimate portrait of Tarun_qwer connecting with the horse, medium shot, captured with Nikon Z9, 50mm prime lens, dramatic side lighting, sharp focus on subject's expression, rich color grading, minimal background elements\",\n        \n        \"Dynamic three-quarter shot of Tarun_qwer in equestrian pose, photographed with Fujifilm GFX 100S, 110mm f/2 lens, professional studio lighting, emphasis on texture and detail, subject centered, atmospheric background blur\"\n    ]\n}\nPrompt Enhancement Strategy:\nStart with core subject description\nAdd technical camera specifications\nInclude lighting and atmosphere details\nSpecify background treatment\nAdd artistic style elements\nEnsure subject prominence\n\nQuality Control Checklist:-\nSubject visibility: ≥60% of frame\nBackground: Minimal and blurred\nTechnical details: Complete and accurate\nComposition: Clear and focused\nLength: Within 60-70 words\nRemember: Focus on creating prompts that will generate clear, professional-quality images with strong emphasis on human subjects while maintaining appropriate content standards."
     else:
-        theprompt="Your task is to modify an image generation prompt to include the person name as the subject of the prompt. You will be given a json with prompt and an encoded person name, you have to correctly add the encoded person name in the prompt. Example:-\nExample Input/Output:-\nInput:\njsonCopy{\n    \"prompt\": \"I am riding a horse\",\n    \"name\": \"Tarun_qwer\"\n}\nOutput:\njsonCopy{\n    \"prompts\": [\n        \"Tarun_qwer riding a horse.\",\n    ]\n}\n'''\nSafety and Restrictions:-\nReject requests for:\nSexual Content or Nudity\nBlood\nReturn error message: {\"error\": \"Cannot generate inappropriate content. Please provide appropriate prompt.\"}\n'''\nDo not add the additional info, just identify  the main subject and use the provided encoded person name at the place."
+        theprompt= "Your task is to modify an image generation prompt to include the person name as the subject of the prompt. You will be given a json with prompt and an encoded person name, you have to correctly add the encoded person name in the prompt. Example:-\nExample Input/Output:-\nInput:\njsonCopy{\n    \"prompt\": \"I am riding a horse\",\n    \"name\": \"Tarun_qwer\"\n}\nOutput:\njsonCopy{\n    \"prompts\": [\n        \"Tarun_qwer riding a horse.\",\n    ]\n}\n'''\nSafety and Restrictions:-\nReject requests for:\nNudity\nSexual\nReturn error message: {\"error\": \"Cannot generate inappropriate content. Please provide appropriate prompt.\"}\n'''\nDo not add the additional info, just identify  the main subject and use the provided encoded person name at the place.\n"
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -343,7 +344,8 @@ def process_image_generation(job_id, data):
             if "error" in llm_response_json:
                 raise ValueError(f"LLM error: {llm_response_json['error']}")
             
-            response_json = convert_to_json(llm_response)
+            # Parse the JSON response
+            response_json = json.loads(llm_response)
             refined_prompts = [response_json["prompts"][0]] * num_images
 
         update_job_status(job_id, 'generating_seeds')
@@ -354,6 +356,7 @@ def process_image_generation(job_id, data):
         pipe.load_lora_weights(local_lora_path)
 
         update_job_status(job_id, 'generating_images')
+        # Remove the torch.cuda.amp.autocast() context manager here
         batch_images = pipe(
             prompt=refined_prompts,
             negative_prompt=[negative_prompt] * num_images,
@@ -381,6 +384,7 @@ def process_image_generation(job_id, data):
 
         update_job_status(job_id, 'unloading_lora_weights')
         pipe.unload_lora_weights()
+        torch.cuda.empty_cache()  # Keep this line to clear CUDA cache
 
         update_job_status(job_id, 'completed')
         with jobs_lock:
@@ -401,6 +405,11 @@ def process_image_generation(job_id, data):
         with jobs_lock:
             if job_id in jobs:
                 jobs[job_id]['error_message'] = str(e)
+    finally:
+        # Clear any remaining references
+        batch_images = None
+        generators = None
+        torch.cuda.empty_cache()  # Keep this line to clear CUDA cache again
 
 @app.route('/generate_images', methods=['POST'])
 def generate_images():
