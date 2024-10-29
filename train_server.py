@@ -16,6 +16,8 @@ import requests
 import shutil
 from autotrain.trainers.dreambooth.train_xl import main, TrainingState
 import argparse
+from queue import Queue
+import threading
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -57,13 +59,49 @@ if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]):
 # Add this class near the top of the file
 class JobTrainingState:
     def __init__(self):
+        self._lock = threading.Lock()
         self._is_training = False
         self._current_step = 0
         self._total_steps = 0
         self._current_loss = 0.0
         self._progress_percentage = 0.0
         self.training_state = None
-        self.last_update_time = None  # Optional: to track last update time
+        self.last_update_time = None
+
+    def update_state(self, training_state):
+        with self._lock:
+            if training_state:
+                self._current_step = training_state.current_step
+                self._current_loss = training_state.current_loss if training_state.current_loss is not None else 0.0
+                if self._total_steps > 0:
+                    self._progress_percentage = (self._current_step / self._total_steps) * 100
+            self.training_state = training_state
+            self.last_update_time = datetime.now()
+
+    @property
+    def current_step(self):
+        with self._lock:
+            return self._current_step
+
+    @property
+    def current_loss(self):
+        with self._lock:
+            return self._current_loss
+
+    @property
+    def progress_percentage(self):
+        with self._lock:
+            return self._progress_percentage
+
+    @property
+    def is_training(self):
+        with self._lock:
+            return self._is_training
+
+    @is_training.setter
+    def is_training(self, value):
+        with self._lock:
+            self._is_training = value
 
 def upload_safetensor_to_s3(job_id, unique_user_id, project_name, training_args):
     try:
@@ -309,15 +347,19 @@ def train_lora(job_id, args):
         # Set up training arguments
         training_args = setup_training_args(args)
         
-        # Initialize training state
+        # Initialize training state with thread-safe implementation
         training_state = TrainingState()
         jobs[job_id]["training_state"] = JobTrainingState()
-        jobs[job_id]["training_state"].training_state = training_state
         jobs[job_id]["training_state"].is_training = True
-        jobs[job_id]["training_state"].total_steps = args["num_steps"]
-        
-        # Start training (removed the callback parameter)
-        main(training_args, training_state=training_state)
+        jobs[job_id]["training_state"]._total_steps = args["num_steps"]
+
+        # Create a callback function to update the training state
+        def update_callback(state):
+            if job_id in jobs and "training_state" in jobs[job_id]:
+                jobs[job_id]["training_state"].update_state(state)
+
+        # Start training with callback
+        main(training_args, training_state=training_state, callback=update_callback)
         
         # Upload the generated .safetensor file and metadata to S3
         upload_success, full_s3_path = upload_safetensor_to_s3(job_id, args["unique_user_id"], args["project_name"], args)
@@ -426,7 +468,7 @@ def start_training():
         shutil.rmtree(training_args["project_name"])
         logging.info(f"Cleaned up existing project folder: {training_args['project_name']}")
 
-    thread = Thread(target=train_lora, args=(job_id, training_args))
+    thread = Thread(target=train_lora, args=(job_id, training_args), daemon=True)
     thread.start()
     
     logging.info(f"Training thread started for job {job_id}")
