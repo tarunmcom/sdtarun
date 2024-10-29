@@ -18,6 +18,7 @@ from autotrain.trainers.dreambooth.train_xl import main, TrainingState
 import argparse
 from queue import Queue
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,6 +27,7 @@ app = Flask(__name__)
 
 # Global variables
 jobs = defaultdict(dict)
+executor = ThreadPoolExecutor(max_workers=1)  # Only allow one training job at a time
 
 # Configuration
 DEFAULT_CONFIG = {
@@ -352,11 +354,13 @@ def train_lora(job_id, args):
         jobs[job_id]["training_state"] = JobTrainingState()
         jobs[job_id]["training_state"].is_training = True
         jobs[job_id]["training_state"]._total_steps = args["num_steps"]
+        jobs[job_id]["last_update"] = datetime.now()
 
         # Create a callback function to update the training state
         def update_callback(state):
             if job_id in jobs and "training_state" in jobs[job_id]:
                 jobs[job_id]["training_state"].update_state(state)
+                jobs[job_id]["last_update"] = datetime.now()
 
         # Start training with callback
         main(training_args, training_state=training_state, callback=update_callback)
@@ -468,10 +472,10 @@ def start_training():
         shutil.rmtree(training_args["project_name"])
         logging.info(f"Cleaned up existing project folder: {training_args['project_name']}")
 
-    thread = Thread(target=train_lora, args=(job_id, training_args), daemon=True)
-    thread.start()
+    # Submit the training job to the executor instead of creating a new thread
+    executor.submit(train_lora, job_id, training_args)
     
-    logging.info(f"Training thread started for job {job_id}")
+    logging.info(f"Training job submitted for job {job_id}")
     return jsonify({"message": "Training job initiated", "job_id": job_id}), 202
 
 @app.route('/status/<job_id>', methods=['GET'])
@@ -485,6 +489,14 @@ def get_status(job_id):
             return jsonify({"error": "Job not found"}), 404
         
         job_info = jobs[job_id]
+        
+        # Check if training is stalled (no updates for more than 5 minutes)
+        if (job_info.get("status") == "BUSY" and 
+            "last_update" in job_info and 
+            datetime.now() - job_info["last_update"] > timedelta(minutes=5)):
+            job_info["status"] = "STALLED"
+            job_info["message"] = "Training appears to be stalled"
+
         status_info = {
             "job_id": job_id,
             "status": job_info.get("status", "UNKNOWN"),
@@ -575,4 +587,5 @@ def check_server_busy():
     return jsonify({"busy": busy})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Change to use multiple threads for better concurrency
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
