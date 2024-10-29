@@ -1,4 +1,4 @@
-autotrain-advanced
+git+https://github.com/tarunmcom/autotrain-advanced.git
 xformers
 peft
 boto3
