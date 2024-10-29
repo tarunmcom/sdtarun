@@ -6,4 +6,4 @@ flask
 gunicorn
 gevent
 openai
-numpy==2.0.0
+numpy==1.26.4
