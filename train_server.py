@@ -258,7 +258,7 @@ def setup_training_args(args):
     training_args.rank = 4
     training_args.validation_prompt = None
     training_args.num_train_epochs = None
-    training_args.report_to = "tensorflow"  # Changed from "tensorboard" to "none"
+    training_args.report_to = "tensorboard"  # Changed from "tensorboard" to "none"
     training_args.logging_dir = "logs"
     training_args.optimizer = "adamw"
     training_args.snr_gamma = None
