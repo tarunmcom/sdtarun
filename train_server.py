@@ -3,7 +3,7 @@ import subprocess
 import uuid
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template_string
 from threading import Thread
 from collections import defaultdict
@@ -14,6 +14,8 @@ import re
 import json
 import requests
 import shutil
+from autotrain.trainers.dreambooth.train_xl import main, TrainingState
+import argparse
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,11 +29,11 @@ jobs = defaultdict(dict)
 DEFAULT_CONFIG = {
     "model_name": "stabilityai/stable-diffusion-xl-base-1.0",
     "prompt": "photo of a person",
-    "push_to_hub": True,
+    "push_to_hub": False,
     "hf_token": "your_huggingface_token_here",
     "hf_username": "your_huggingface_username_here",
     "learning_rate": 1e-4,
-    "num_steps": 12,
+    "num_steps": 500,
     "batch_size": 1,
     "gradient_accumulation": 4,
     "resolution": 1024,
@@ -51,6 +53,17 @@ AWS_REGION = os.environ.get('AWS_REGION', 'us-east-2')
 # Add this near the top of your file, after the imports
 if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]):
     raise EnvironmentError("AWS credentials are not properly set in environment variables.")
+
+# Add this class near the top of the file
+class JobTrainingState:
+    def __init__(self):
+        self._is_training = False
+        self._current_step = 0
+        self._total_steps = 0
+        self._current_loss = 0.0
+        self._progress_percentage = 0.0
+        self.training_state = None
+        self.last_update_time = None  # Optional: to track last update time
 
 def upload_safetensor_to_s3(job_id, unique_user_id, project_name, training_args):
     try:
@@ -190,6 +203,87 @@ def call_callback_endpoint(job_id, project_name, s3_bucket, s3_folder, person_na
     except requests.RequestException as e:
         logging.error(f"Failed to send callback for job {job_id}: {str(e)}")
 
+def setup_training_args(args):
+    training_args = argparse.Namespace()
+    
+    # Essential parameters
+    training_args.pretrained_model_name_or_path = args["model_name"]
+    training_args.pretrained_vae_model_name_or_path = None
+    training_args.instance_prompt = args["prompt"]
+    training_args.output_dir = args["project_name"]
+    training_args.instance_data_dir = f"images_{args['job_id']}"
+    
+    # Core training parameters
+    training_args.learning_rate = args["learning_rate"]
+    training_args.max_train_steps = args["num_steps"]
+    training_args.train_batch_size = args["batch_size"]
+    training_args.gradient_accumulation_steps = args["gradient_accumulation"]
+    training_args.resolution = args["resolution"]
+    training_args.use_8bit_adam = args["use_8bit_adam"]
+    training_args.enable_xformers_memory_efficient_attention = args["use_xformers"]
+    training_args.mixed_precision = args["mixed_precision"]
+    training_args.train_text_encoder = args["train_text_encoder"]
+    training_args.gradient_checkpointing = not args["disable_gradient_checkpointing"]
+    
+    # Additional parameters with default values
+    training_args.revision = None
+    training_args.variant = None
+    training_args.with_prior_preservation = False
+    training_args.num_class_images = 50
+    training_args.class_data_dir = None
+    training_args.class_prompt = None
+    training_args.seed = None
+    training_args.center_crop = False
+    training_args.random_flip = False
+    training_args.adam_beta1 = 0.9
+    training_args.adam_beta2 = 0.999
+    training_args.adam_weight_decay = 1e-2
+    training_args.adam_weight_decay_text_encoder = 1e-2
+    training_args.text_encoder_lr = None
+    training_args.adam_epsilon = 1e-08
+    training_args.max_grad_norm = 1.0
+    training_args.allow_tf32 = False
+    training_args.dataloader_num_workers = 0
+    training_args.num_validation_images = 4
+    training_args.validation_epochs = 50
+    training_args.checkpointing_steps = 500
+    training_args.checkpoints_total_limit = None
+    training_args.resume_from_checkpoint = None
+    training_args.enable_cpu_offload = False
+    training_args.scale_lr = False
+    training_args.lr_scheduler = "constant"
+    training_args.lr_warmup_steps = 0
+    training_args.lr_num_cycles = 1
+    training_args.lr_power = 1.0
+    training_args.rank = 4
+    training_args.validation_prompt = None
+    training_args.num_train_epochs = None
+    training_args.report_to = "tensorflow"  # Changed from "tensorboard" to "none"
+    training_args.logging_dir = "logs"
+    training_args.optimizer = "adamw"
+    training_args.snr_gamma = None
+    training_args.use_dora = False
+    training_args.do_edm_style_training = False
+    training_args.repeats = 1
+    training_args.prior_loss_weight = 1.0
+    training_args.sample_batch_size = 4
+    training_args.prodigy_beta3 = 0.999
+    training_args.prodigy_decouple = True
+    training_args.prodigy_use_bias_correction = True
+    training_args.prodigy_safeguard_warmup = True
+    
+    # Hub related parameters
+    if args["push_to_hub"]:
+        training_args.push_to_hub = True
+        training_args.hub_token = args["hf_token"]
+        training_args.hub_model_id = f"{args['hf_username']}/{args['project_name']}"
+    else:
+        training_args.push_to_hub = False
+        training_args.hub_token = None
+        training_args.hub_model_id = None
+    
+    return training_args
+
 def train_lora(job_id, args):
     logging.info(f"Starting training for job {job_id}")
     jobs[job_id]["status"] = "BUSY"
@@ -211,85 +305,40 @@ def train_lora(job_id, args):
     jobs[job_id]["stage"] = "training"
     jobs[job_id]["message"] = "Training in progress"
     
-    cmd = [
-        "autotrain", "dreambooth",
-        "--model", args["model_name"],
-        "--project-name", args["project_name"],
-        "--image-path", local_image_folder,  # Use the downloaded images folder
-        "--prompt", args["prompt"],
-        "--resolution", str(args["resolution"]),
-        "--batch-size", str(args["batch_size"]),
-        "--num-steps", str(args["num_steps"]),
-        "--gradient-accumulation", str(args["gradient_accumulation"]),
-        "--lr", str(args["learning_rate"]),
-        "--mixed-precision", args["mixed_precision"],
-        "--username", args["hf_username"]
-    ]
-    
-    if args["use_xformers"]:
-        cmd.append("--xformers")
-    if args["train_text_encoder"]:
-        cmd.append("--train-text-encoder")
-    if args["use_8bit_adam"]:
-        cmd.append("--use-8bit-adam")
-    if args["disable_gradient_checkpointing"]:
-        cmd.append("--disable_gradient-checkpointing")
-    if args["push_to_hub"]:
-        cmd.extend(["--push-to-hub", "--token", args["hf_token"]])
-    
-    logging.debug(f"Command for job {job_id}: {' '.join(cmd)}")
-    
     try:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        jobs[job_id]["process"] = process
-        jobs[job_id]["steps_completed"] = 0
+        # Set up training arguments
+        training_args = setup_training_args(args)
         
-        # Real-time logging and output capturing
-        output = []
-        for line in iter(process.stdout.readline, ''):
-            logging.info(f"Job {job_id} stdout: {line.strip()}")
-            output.append(line)
-            
-            # Check if the line contains step information
-            if "Step" in line:
-                try:
-                    current_step = int(line.split("Step")[1].split("/")[0])
-                    jobs[job_id]["steps_completed"] = current_step
-                except ValueError:
-                    pass
+        # Initialize training state
+        training_state = TrainingState()
+        jobs[job_id]["training_state"] = JobTrainingState()
+        jobs[job_id]["training_state"].training_state = training_state
+        jobs[job_id]["training_state"].is_training = True
+        jobs[job_id]["training_state"].total_steps = args["num_steps"]
         
-        process.wait()
+        # Start training (removed the callback parameter)
+        main(training_args, training_state=training_state)
         
-        if process.returncode == 0:
-            # Upload the generated .safetensor file and metadata to S3
-            upload_success, full_s3_path = upload_safetensor_to_s3(job_id, args["unique_user_id"], args["project_name"], args)
-            if upload_success:
-                jobs[job_id]["status"] = "COMPLETED"
-                jobs[job_id]["message"] = f"Training completed successfully. Safetensor file and metadata uploaded to S3. Full path: {full_s3_path}"
-                jobs[job_id]["stage"] = "completed"
-                jobs[job_id]["s3_upload_success"] = True
-                jobs[job_id]["safetensor_path"] = full_s3_path
-                logging.info(f"Job {job_id} completed successfully and safetensor with metadata uploaded to {full_s3_path}")
-                call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
-                                       args["person_name"], "COMPLETED", datetime.now().isoformat())
-            else:
-                jobs[job_id]["status"] = "FAILED"
-                jobs[job_id]["message"] = "Training completed, but failed to upload safetensor file and metadata to S3."
-                jobs[job_id]["stage"] = "upload_failed"
-                logging.error(f"Job {job_id} training completed, but failed to upload safetensor and metadata")
-                call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
-                                       args["person_name"], "FAILED", datetime.now().isoformat(), 
-                                       "Failed to upload safetensor file and metadata to S3")
+        # Upload the generated .safetensor file and metadata to S3
+        upload_success, full_s3_path = upload_safetensor_to_s3(job_id, args["unique_user_id"], args["project_name"], args)
+        
+        if upload_success:
+            jobs[job_id]["status"] = "COMPLETED"
+            jobs[job_id]["message"] = f"Training completed successfully. Safetensor file and metadata uploaded to S3. Full path: {full_s3_path}"
+            jobs[job_id]["stage"] = "completed"
+            jobs[job_id]["s3_upload_success"] = True
+            jobs[job_id]["safetensor_path"] = full_s3_path
+            logging.info(f"Job {job_id} completed successfully and safetensor with metadata uploaded to {full_s3_path}")
+            call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
+                                   args["person_name"], "COMPLETED", datetime.now().isoformat())
         else:
             jobs[job_id]["status"] = "FAILED"
-            error_message = "\n".join(output[-10:])  # Capture last 10 lines of output
-            jobs[job_id]["message"] = f"Training failed with return code {process.returncode}. Last output:\n{error_message}"
-            jobs[job_id]["stage"] = "training_failed"
-            jobs[job_id]["error_message"] = error_message
-            logging.error(f"Job {job_id} failed with return code {process.returncode}")
+            jobs[job_id]["message"] = "Training completed, but failed to upload safetensor file and metadata to S3."
+            jobs[job_id]["stage"] = "upload_failed"
+            logging.error(f"Job {job_id} training completed, but failed to upload safetensor and metadata")
             call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
                                    args["person_name"], "FAILED", datetime.now().isoformat(), 
-                                   f"Training failed with return code {process.returncode}")
+                                   "Failed to upload safetensor file and metadata to S3")
     except Exception as e:
         jobs[job_id]["status"] = "FAILED"
         jobs[job_id]["message"] = f"An error occurred: {str(e)}"
@@ -298,7 +347,8 @@ def train_lora(job_id, args):
         call_callback_endpoint(job_id, args["project_name"], args["s3_bucket"], args["s3_folder"], 
                                args["person_name"], "FAILED", datetime.now().isoformat(), str(e))
     finally:
-        jobs[job_id]["process"] = None
+        if "training_state" in jobs[job_id]:
+            jobs[job_id]["training_state"].is_training = False
         # Clean up the local image folder
         if os.path.exists(local_image_folder):
             shutil.rmtree(local_image_folder)
@@ -312,7 +362,7 @@ def train_lora(job_id, args):
 
 @app.route('/')
 def index():
-    return jsonify({"message": "alive", "server_type":"Train"})  # Updated to return JSON response
+    return jsonify({"message": "alive"})  # Updated to return JSON response
 
 @app.route('/train', methods=['POST'])
 def start_training():
@@ -384,44 +434,85 @@ def start_training():
 
 @app.route('/status/<job_id>', methods=['GET'])
 def get_status(job_id):
-    if job_id not in jobs:
-        logging.warning(f"Attempted to get status for non-existent job {job_id}")
-        return jsonify({"error": "Job not found"}), 404
-    
-    status_info = {
-        "job_id": job_id,
-        "status": jobs[job_id]["status"],
-        "message": jobs[job_id].get("message", ""),
-        "steps_completed": jobs[job_id].get("steps_completed", 0),
-        "total_steps": jobs[job_id].get("num_steps", 0),
-        "stage": jobs[job_id].get("stage", "unknown"),
-        "safetensor_path": jobs[job_id].get("safetensor_path", "")
-    }
-    
-    if "start_time" in jobs[job_id]:
-        elapsed_time = datetime.now() - jobs[job_id]["start_time"]
-        status_info["elapsed_time"] = str(elapsed_time)
-    
-    logging.info(f"Status for job {job_id}: {status_info}")
-    return jsonify(status_info)
+    try:
+        if not job_id:
+            return jsonify({"error": "Invalid job_id"}), 400
+            
+        if job_id not in jobs:
+            logging.warning(f"Attempted to get status for non-existent job {job_id}")
+            return jsonify({"error": "Job not found"}), 404
+        
+        job_info = jobs[job_id]
+        status_info = {
+            "job_id": job_id,
+            "status": job_info.get("status", "UNKNOWN"),
+            "message": job_info.get("message", "Status unknown"),
+            "stage": job_info.get("stage", "unknown"),
+            "safetensor_path": job_info.get("safetensor_path", "")
+        }
+        
+        # Add training metrics if available
+        try:
+            if ("training_state" in job_info and 
+                job_info["training_state"] is not None and 
+                job_info["training_state"].training_state is not None):
+                
+                job_training_state = job_info["training_state"]
+                training_state = job_training_state.training_state
+                
+                try:
+                    current_step = int(training_state.current_step)
+                    total_steps = int(job_training_state.total_steps)
+                    current_loss = float(training_state.current_loss) if training_state.current_loss is not None else 0.0
+                    
+                    # Calculate progress
+                    progress_percentage = 0.0
+                    if total_steps > 0:
+                        progress_percentage = (current_step / total_steps) * 100
+                        progress_percentage = min(100.0, max(0.0, progress_percentage))
+                    
+                    # Calculate elapsed time
+                    elapsed_time = datetime.now() - job_info["start_time"]
+                    estimated_completion_time = None
+                    if current_step > 0:
+                        seconds_per_step = elapsed_time.total_seconds() / current_step
+                        remaining_steps = total_steps - current_step
+                        estimated_completion_time = datetime.now() + timedelta(seconds=remaining_steps * seconds_per_step)
 
-@app.route('/stop/<job_id>', methods=['POST'])
-def stop_training(job_id):
-    if job_id not in jobs:
-        logging.warning(f"Attempted to stop non-existent job {job_id}")
-        return jsonify({"error": "Job not found"}), 404
-    
-    if jobs[job_id]["status"] != "BUSY" or jobs[job_id]["process"] is None:
-        logging.info(f"No training in progress for job {job_id}")
-        return jsonify({"message": "No training in progress for this job"}), 400
-    
-    jobs[job_id]["process"].terminate()
-    jobs[job_id]["process"] = None
-    jobs[job_id]["status"] = "STOPPED"
-    jobs[job_id]["message"] = "Training stopped by user"
-    
-    logging.info(f"Training for job {job_id} stopped by user")
-    return jsonify({"message": f"Training for job {job_id} stopped"}), 200
+                    status_info.update({
+                        "steps_completed": current_step,
+                        "total_steps": total_steps,
+                        "current_loss": round(current_loss, 4),
+                        "progress_percentage": round(progress_percentage, 2),
+                        "is_training": bool(job_training_state.is_training),
+                        "elapsed_time": str(elapsed_time),
+                        "estimated_completion_time": estimated_completion_time.isoformat() if estimated_completion_time else None
+                    })
+
+                except (ValueError, TypeError) as e:
+                    logging.error(f"Error converting training values for job {job_id}: {str(e)}")
+                    status_info.update({
+                        "steps_completed": 0,
+                        "total_steps": 0,
+                        "current_loss": 0.0,
+                        "progress_percentage": 0.0,
+                        "is_training": False,
+                        "training_error": "Error reading training values"
+                    })
+        except Exception as e:
+            logging.error(f"Error processing training state for job {job_id}: {str(e)}")
+            status_info["training_error"] = "Error processing training state"
+        
+        logging.info(f"Job status response for job {job_id}: {json.dumps(status_info)}")
+        return jsonify(status_info)
+        
+    except Exception as e:
+        logging.error(f"Unexpected error in get_status for job {job_id}: {str(e)}")
+        return jsonify({
+            "error": "Internal server error",
+            "job_id": job_id,
+            "status": "ERROR"
+        }), 500
 
 @app.route('/jobs', methods=['GET'])
 def list_jobs():
@@ -441,29 +532,5 @@ def check_server_busy():
     logging.info(f"Server busy status: {busy}")
     return jsonify({"busy": busy})
 
-def check_job_status():
-    for job_id, job_info in jobs.items():
-        if job_info["status"] == "BUSY":
-            if job_info["process"] is None or job_info["process"].poll() is not None:
-                job_info["status"] = "FAILED"
-                job_info["message"] = "Process terminated unexpectedly"
-                job_info["stage"] = "terminated"
-                logging.error(f"Job {job_id} process terminated unexpectedly")
-        elif job_info["status"] == "COMPLETED":
-            if "s3_upload_success" not in job_info:
-                job_info["message"] = "Training completed, but failed to upload safetensor file and metadata to S3."
-                job_info["stage"] = "upload_failed"
-            else:
-                job_info["message"] = f"Training completed successfully. Safetensor file and metadata uploaded to S3. Full path: {job_info.get('safetensor_path', 'Unknown')}"
-                job_info["stage"] = "completed"
-        elif job_info["status"] == "FAILED":
-            if "error_message" in job_info:
-                job_info["message"] = f"Training failed: {job_info['error_message']}"
-            job_info["stage"] = "failed"
-
 if __name__ == '__main__':
-    from apscheduler.schedulers.background import BackgroundScheduler
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(func=check_job_status, trigger="interval", seconds=60)
-    scheduler.start()
     app.run(host='0.0.0.0', port=5000, debug=False)
