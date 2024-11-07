@@ -109,20 +109,23 @@ def download_lora_from_s3(bucket_name, lora_path, local_path):
 
 def upload_image_to_s3(bucket_name, image, s3_folder_path, filename):
     try:
+        # Change extension to jpg
+        filename = os.path.splitext(filename)[0] + '.jpg'
+        
         # Original image
         buffered = BytesIO()
-        image.save(buffered, format="PNG")
+        image.save(buffered, format="JPEG", quality=90)  # Changed to JPEG with 90% quality
         
         # Create thumbnail
-        thumb_size = (200, 200)  # You can adjust this size as needed
+        thumb_size = (200, 200)
         thumbnail = image.copy()
         thumbnail.thumbnail(thumb_size)
         thumb_buffered = BytesIO()
-        thumbnail.save(thumb_buffered, format="PNG")
+        thumbnail.save(thumb_buffered, format="JPEG", quality=90)  # Changed to JPEG with 90% quality
         
         # Create the full S3 paths
         s3_path = f"{s3_folder_path}/{filename}"
-        thumb_filename = f"{os.path.splitext(filename)[0]}_thumb.png"
+        thumb_filename = f"{os.path.splitext(filename)[0]}_thumb.jpg"  # Changed extension to jpg
         thumb_s3_path = f"{s3_folder_path}/{thumb_filename}"
         
         # Ensure the folder structure exists
@@ -375,7 +378,7 @@ def process_image_generation(job_id, data):
         user_id, lora_id, predict_job_id = data['output_s3_folder_path'].split('/')
         
         for i, image in enumerate(batch_images):
-            filename = f"{i}_{uuid.uuid4()}.png"
+            filename = f"{i}_{uuid.uuid4()}.jpg"
             s3_folder_path = f"{user_id}/{lora_id}/{predict_job_id}"
             s3_path = upload_image_to_s3(generated_images_s3_bucket, image, s3_folder_path, filename)
             # Construct the correct S3 path for the response
